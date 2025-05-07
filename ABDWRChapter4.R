@@ -71,12 +71,12 @@ base_plot +
 # by best and worse I mean in terms of run differential.
 
 
-# Plot vs actual win percentage
-# Note that one should instead plot vs predicted Wpct, but in
-# this case I really want to understand how the teams under or over
-# performed.
+# Plot vs predicted win percentage
+# Note that if you plot vs actual win percentage you will
+# see patterns, but these are not real. Residuals are not
+# in general independant of the response!  See ROS 11.2
 
-base_plot2 <- ggplot(my_teams, aes(x = Wpct, y = residuals_pyt)) +
+base_plot2 <- ggplot(my_teams, aes(x = Wpct_pyt, y = residuals_pyt)) +
   geom_point(alpha = 0.3) +
   geom_hline(yintercept = 0, linetype = 3) +
   xlab("Wpct") + ylab("Residual")
