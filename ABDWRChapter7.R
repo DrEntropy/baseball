@@ -4,7 +4,7 @@ library(tidyverse)
 library(abdwr3edata)
 library(baseballr)
 
-
+### 7.1 and 7.2
 ##### Data acqusition - commented out
 
 # This is now needed to get up to date baseballr
@@ -66,6 +66,7 @@ sc_taken <- read_rds(here::here("data/sc_taken_2022.rds"))
 set.seed(12345)
 taken <- sample_n(sc_taken, 50000)
 
+## 7.3 - strike zone
 
 plate_width <- 17 + 2 * (9/pi)
 k_zone_plot <- ggplot(
