@@ -1,0 +1,108 @@
+---
+title: "ABDWRChapter8"
+output: html_document
+---
+
+Simple test of hierchical peak model
+
+
+Fake data:
+```{r}
+library(brms)
+library(dplyr)
+library(tidyverse)
+
+# Set seed
+set.seed(123)
+
+ 
+n_positions <- 8
+positions <- paste0("Pos", 1:n_positions)
+n_players <- 80
+
+# True position-specific parameters
+true_intercepts <- rnorm(n_positions, 0.75, 0.05)
+true_linear_age <- rnorm(n_positions, 0.01, 0.005)
+true_quad_age <- rnorm(n_positions, -0.002, 0.0005)
+
+# Expand each player across ages 20 to 40
+fake_data <- expand.grid(
+  player = 1:n_players,
+  age = 20:40
+) %>%
+  mutate(
+    position = sample(positions, n_players, replace = TRUE)[player],
+    pos_idx = match(position, positions),
+    age_c = age - 30,
+    ops = true_intercepts[pos_idx] + 
+          true_linear_age[pos_idx] * age_c + 
+          true_quad_age[pos_idx] * age_c^2 + 
+          rnorm(n(), 0, 0.02)
+  )
+```
+
+Example
+
+```{r}
+random_player <- sample(unique(fake_data$player), 1)
+fake_data %>%
+  filter(player == random_player) %>%
+  ggplot(aes(x = age, y = ops)) +
+  geom_point() +
+  geom_line() +
+  labs(title = paste("OPS vs Age for Player", random_player),
+       x = "Age", y = "OPS")
+```
+
+
+fit model
+
+```{r}
+# Fit hierarchical model
+fit <- brm(
+  ops ~ age_c + I(age_c^2) + (age_c + I(age_c^2) | position),
+  data = fake_data,
+  cores = 4, iter = 2000
+)
+
+summary(fit)
+
+# Posterior predictive check
+pp_check(fit)
+```
+
+
+
+plot 
+
+```{r}
+# Compute and plot peak age with uncertainty per position
+posterior_samples <- as_draws_df(fit)
+# Extract fixed and random effects
+peak_ages <- posterior_samples %>%
+  select(b_age_c, b_Iage_cE2, starts_with("r_position")) %>%
+  pivot_longer(cols = starts_with("r_position"), names_to = c("position", "param"),
+               names_pattern = "r_position\\[(.*?),(.*?)\\]") %>%
+  pivot_wider(names_from = param, values_from = value) %>%
+  mutate(
+    linear_total = b_age_c + age_c,
+    quad_total = b_Iage_cE2 + Iage_cE2,
+    peak_age = 30 - (linear_total / (2 * quad_total))
+  )
+
+peak_ages_summary <- peak_ages %>%
+  group_by(position) %>%
+  summarize(
+    peak_age_mean = mean(peak_age),
+    peak_age_lower = quantile(peak_age, 0.025),
+    peak_age_upper = quantile(peak_age, 0.975)
+  )
+
+# Plot peak age by position
+ggplot(peak_ages_summary, aes(x = position, y = peak_age_mean)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = peak_age_lower, ymax = peak_age_upper), width = 0.2) +
+  labs(title = "Peak Age by Position", x = "Position", y = "Peak Age") +
+  theme_minimal()
+
+```
