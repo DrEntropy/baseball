@@ -59,12 +59,12 @@ fit model
 
 ```{r}
 # Fit hierarchical model
-fit <- brm(
-  ops ~ age_c + I(age_c^2) + (age_c + I(age_c^2) | position),
+fit_player <- brm(
+  ops ~ age_c + I(age_c^2) + (age_c + I(age_c^2) | player),
   data = fake_data,
-  cores = 4, iter = 2000
+  cores = 4, iter = 2000,
+  control = list(adapt_delta = 0.95)
 )
-
 summary(fit)
 
 # Posterior predictive check
@@ -72,37 +72,63 @@ pp_check(fit)
 ```
 
 
-
-plot 
+Compute each player peak ages
 
 ```{r}
-# Compute and plot peak age with uncertainty per position
-posterior_samples <- as_draws_df(fit)
-# Extract fixed and random effects
-peak_ages <- posterior_samples %>%
-  select(b_age_c, b_Iage_cE2, starts_with("r_position")) %>%
-  pivot_longer(cols = starts_with("r_position"), names_to = c("position", "param"),
-               names_pattern = "r_position\\[(.*?),(.*?)\\]") %>%
+
+posterior_player <- as_draws_df(fit_player)
+
+# Compute peak ages per player
+player_peak_ages <- posterior_player %>%
+  select(starts_with("r_player"), b_age_c, b_Iage_cE2) %>%
+  pivot_longer(cols = starts_with("r_player"), names_to = c("player", "param"),
+               names_pattern = "r_player\\[(.*?),(.*?)\\]") %>%
   pivot_wider(names_from = param, values_from = value) %>%
   mutate(
     linear_total = b_age_c + age_c,
     quad_total = b_Iage_cE2 + Iage_cE2,
     peak_age = 30 - (linear_total / (2 * quad_total))
-  )
-
-peak_ages_summary <- peak_ages %>%
-  group_by(position) %>%
+  ) %>%
+  group_by(player) %>%
   summarize(
     peak_age_mean = mean(peak_age),
     peak_age_lower = quantile(peak_age, 0.025),
     peak_age_upper = quantile(peak_age, 0.975)
-  )
+  ) %>%
+  mutate(player = as.integer(player))
 
-# Plot peak age by position
-ggplot(peak_ages_summary, aes(x = position, y = peak_age_mean)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = peak_age_lower, ymax = peak_age_upper), width = 0.2) +
-  labs(title = "Peak Age by Position", x = "Position", y = "Peak Age") +
+```
+
+
+And plot
+```{r}
+player_peak_ages <- player_peak_ages %>%
+  left_join(fake_data %>% select(player, position) %>% distinct(), by = "player")
+
+# Plot strip plot grouped by position
+ggplot(player_peak_ages, aes(x = position, y = peak_age_mean)) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA) +
+  labs(title = "Player Peak Ages Grouped by Position", 
+       x = "Position", y = "Peak Age") +
   theme_minimal()
 
+
+``` 
+
+
+CONSIDER: look at coefficients of sample and see if we can just use random slopes.  Still changes peak age.
+(Check standard deviation of quadratic term)
+
+
+or supoer deluxe
+```{r}
+fit_player <- brm(
+  ops ~ age_c + I(age_c^2) + 
+    (age_c + I(age_c^2) | position) + 
+    (age_c + I(age_c^2) | player),
+  data = fake_data,
+  cores = 4, iter = 3000,
+  control = list(adapt_delta = 0.95)
+)
 ```
