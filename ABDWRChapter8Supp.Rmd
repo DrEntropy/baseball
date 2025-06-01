@@ -345,11 +345,7 @@ mcmc_intervals(fit_peakops, regex_pars = "peakAge_POS")
 ```
 
 
-```{r}
-#raneff_draws <- as_draws_df(fit_peakops, regex_pars = "^r_playerID")
-ration <- neff_ratio(fit_peakops)
-mcmc_neff(ration)
-```
+There maybe some difference in peak age by position, but it is a slight effect if any.
 
 
 
