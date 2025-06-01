@@ -309,7 +309,7 @@ ggplot() +
 
 ```
 
-If time permitted we could explore this further. For example, in this model we can now include directly POS as a predictor that we can interprets for peak age.  I could not get this to sample well yet, need to rethink this sometime in the future.  
+If time permitted we could explore this further. For example, in this model we can now include directly POS as a predictor that we can interprets for peak age.  I could not get this to sample well yet, need to rethink this sometime in the future. For example ESS on peakAge for first base was very low. 
 
 ```{r}
 nlformops <- bf(
@@ -335,6 +335,20 @@ fit_peakops <- brm(
   family = student(),
   control = list(adapt_delta = 0.95)
 )
+```
+
+```{r}
+library(bayesplot)
+mcmc_intervals(fit_peakops, regex_pars = "peakAge_POS")
+
+
+```
+
+
+```{r}
+#raneff_draws <- as_draws_df(fit_peakops, regex_pars = "^r_playerID")
+ration <- neff_ratio(fit_peakops)
+mcmc_neff(ration)
 ```
 
 
