@@ -208,7 +208,7 @@ set.seed(123)
 selected_players <- sample(unique(batting_2000a$playerID), 4)
 
  
-age_seq <- seq(min(batting_2000a$Age), max(batting_2000a$Age), length.out = 50)
+age_seq <- seq(20, 50, length.out = 50)
 plot_data <- expand.grid(playerID = selected_players, Age = age_seq) %>%
   mutate(age_c = (Age - 30)/20)
 
