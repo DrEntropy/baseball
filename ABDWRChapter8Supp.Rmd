@@ -1,9 +1,15 @@
 ---
-title: "ABDWRChapter8"
+title: "ABDWRChapter8Supp"
 output: html_document
 ---
 
+## Baseball OPS and Peak Ages
 
+This supplement is just to take a look at using the `brms` package to fit a hierarchical model of OPS and peak ages for baseball players. The data is from the `Lahman` package, which contains historical baseball statistics. This is a supplement to my notes on Chapter 8.
+
+
+### Grab all the data. 
+This is a subset of the code from the book just to get the data ready for analysis.
 ```{r}
 library(tidyverse)
 library(Lahman)
@@ -28,13 +34,6 @@ get_stats <- function(player_id) {
     select(Age, SLG, OBP, OPS)
 }
 
-```
-
-
-
-### Computing trajectories 
-
-```{r}
 batting_2000 <- batting |> 
   group_by(playerID) |>
   summarize(AB_career = sum(AB, na.rm = TRUE)) |>
@@ -50,9 +49,6 @@ Positions <- Fielding |>
 
 batting_2000 <- batting_2000 |>
   inner_join(Positions, by = "playerID")
-
-
-
 
 
 batting_2000 <- batting_2000 |> 
@@ -90,10 +86,7 @@ not_current_playerID <- People |>
 batting_2000 <- batting_2000 |>
   filter(playerID %in% not_current_playerID)
 
-```
 
-
-```{r}
 midcareers <- batting_2000 |>
   group_by(playerID) |>
   summarize(
@@ -103,21 +96,18 @@ midcareers <- batting_2000 |>
 batting_2000 <- batting_2000 |>
   inner_join(midcareers, by = "playerID")
 
-```
-
-
-
-### Fielding pos
-
-```{r}
+# Add fielding positions
 batting_2000a <- batting_2000 |>
   filter(Midyear >= 1985, Midyear <= 1995) |> ungroup() 
 
 batting_2000a <- batting_2000a |>
-    mutate(age_c = (Age - 30)/20)|> 
-     select(OPS, playerID, Age, age_c, POS) |> drop_na()
+  mutate(age_c = (Age - 30)/20)|>   # rescaled and centered-ish
+  select(OPS, playerID, Age, age_c, POS) |> drop_na()
+
 ```
 
+
+Idea here is to use the playerID as 'group' to share information across players, and then use the age as a predictor.  The quadratic term is to allow for the peak age to be estimated.  We use a student - t distribution to allow for the heavy tails (posterior predictive check without it looked pretty bad)
 
 
 ```{r}
@@ -135,6 +125,8 @@ fit_player <- brm(
 # Posterior predictive check
 pp_check(fit_player)
 ```
+
+
 
 ```{r}
 posterior_player <- as_draws_df(fit_player)
@@ -163,8 +155,6 @@ player_peak_ages <- player_peak_ages %>%
 ```
 
 ```{r}
-
-
 # Plot strip plot grouped by position
 ggplot(player_peak_ages, aes(x = POS, y = peak_age_median)) +
   geom_jitter(width = 0.2, alpha = 0.5) +
@@ -201,6 +191,9 @@ ggplot(player_peak_ages, aes(x = POS_jitter, y = peak_age_median)) +
        x = "Position", y = "Peak Age") +
   theme_minimal()
 ```
+
+
+We can also check the posterior distribution of fit curves.
 
 ```{r}
 # Select 4 random players
@@ -244,18 +237,22 @@ ggplot() +
 
 ## Nonlinear 
 
+We note that the trajectories that are allowed can be quite flexible, in fact too flexible, allowing for trajectories that grow with time for ever (i.e. the quadratic term is positive).  We can use a nonlinear parameterization to force the peak age to be stable.  Fortunately, `brms` allows us to do this easily with the `nl` argument in the `bf()` function.  We can also use informative priors to help guide the model to a reasonable solution.
+
+Note that this model still allows an individual players gamma (the curvature of the trajectory) to be negative, because in some cases the trajectory really might be concave up.    
+
 ```{r}
 nlform <- bf(
   OPS ~ peakOPS - gamma * ((Age - peakAge)/10)^2,
-  peakOPS + peakAge + gamma ~ 1 + (1 | playerID),
+  peakOPS + peakAge + gamma ~ 1 + (1 |ID| playerID),
   nl = TRUE
 )
 
 # Set informative priors
 priors <- c(
-  prior(normal(0.75, 0.1), nlpar = "peakOPS", lb = 0.5, ub = 2),
-  prior(normal(30, 5), nlpar = "peakAge", lb = 10, ub = 60),
-  prior(exponential(1), nlpar = "gamma", lb = 0)
+  prior(normal(0.75, 0.2), nlpar = "peakOPS", lb = 0.5, ub = 2),  # peak OPS
+  prior(normal(30, 5), nlpar = "peakAge", lb = 10, ub = 60),  # restrict peak age
+  prior(exponential(1), nlpar = "gamma", lb = 0)  # gamma should be positive
 )
 
 fit_peak <- brm(
@@ -312,9 +309,37 @@ ggplot() +
 
 ```
 
+If time permitted we could explore this further. For example, in this model we can now include directly POS as a predictor that we can interprets for peak age.  I could not get this to sample well yet, need to rethink this sometime in the future.  
+
+```{r}
+nlformops <- bf(
+  OPS ~ peakOPS - gamma * ((Age - peakAge)/10)^2,
+  gamma ~ (1 | ID | playerID),
+  peakAge + peakOPS ~ 0 + POS + (1 | ID |playerID),
+  nl = TRUE
+)
+
+# Set informative priors
+priors <- c(
+  prior(normal(0.75, 0.2), nlpar = "peakOPS", lb = 0.5, ub = 2),  # peak OPS
+  prior(normal(30, 5), nlpar = "peakAge", lb = 10, ub = 60),  # restrict peak age
+  prior(exponential(1), nlpar = "gamma", lb = 0)  # gamma should be positive
+)
+
+fit_peakops <- brm(
+  nlformops,
+  data = batting_2000a,
+  prior = priors,
+  cores = 4,
+  iter = 4000,
+  family = student(),
+  control = list(adapt_delta = 0.95)
+)
+```
 
 
-## TESTING
+
+## Fake data validation
 
 
 Simple test of hierarchical peak model
@@ -429,11 +454,8 @@ ggplot(player_peak_ages, aes(x = position, y = peak_age_mean)) +
 ``` 
 
 
-CONSIDER: look at coefficients of sample and see if we can just use random slopes.  Still changes peak age.
-(Check standard deviation of quadratic term)
+## Even more complicated model
 
-
-or maybe? random slope for position?
 ```{r}
 fit_player <- brm(
   ops ~ age_c + I(age_c^2) + 
