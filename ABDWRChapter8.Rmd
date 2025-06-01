@@ -3,7 +3,141 @@ title: "ABDWRChapter8"
 output: html_document
 ---
 
-Simple test of hierchical peak model
+
+```{r}
+library(tidyverse)
+library(Lahman)
+
+batting <- Batting |>
+  replace_na(list(SF = 0, HBP = 0))
+
+get_stats <- function(player_id) {
+  batting |> 
+    filter(playerID == player_id) |>
+    inner_join(People, by = "playerID") |>
+    mutate(
+      birthyear = if_else(
+        birthMonth >= 7, birthYear + 1, birthYear
+      ),
+      Age = yearID - birthyear,
+      SLG = (H - X2B - X3B - HR + 2 * X2B + 3 * X3B + 4 * HR) / AB,
+      OBP = (H + BB + HBP) / (AB + BB + HBP + SF),
+      OPS = SLG + OBP
+    ) |>
+    select(Age, SLG, OBP, OPS)
+}
+
+```
+
+
+
+### Computing trajectories 
+
+```{r}
+batting_2000 <- batting |> 
+  group_by(playerID) |>
+  summarize(AB_career = sum(AB, na.rm = TRUE)) |>
+  inner_join(batting, by = "playerID") |>
+  filter(AB_career >= 2000)
+
+
+Positions <- Fielding |> 
+  group_by(playerID, POS) |>
+  summarize(Games = sum(G)) |> 
+  arrange(playerID, desc(Games)) |> 
+  filter(POS == first(POS))
+
+batting_2000 <- batting_2000 |>
+  inner_join(Positions, by = "playerID")
+
+
+
+
+
+batting_2000 <- batting_2000 |> 
+  group_by(playerID, yearID) |>
+  summarize(
+    G = sum(G), AB = sum(AB), R = sum(R),
+    H = sum(H), X2B = sum(X2B), X3B = sum(X3B),
+    HR = sum(HR), RBI = sum(RBI), SB = sum(SB),
+    CS = sum(CS), BB = sum(BB), SH = sum(SH),
+    SF = sum(SF), HBP = sum(HBP),
+    AB_career = first(AB_career),
+    POS = first(POS)
+  ) |>
+  mutate(
+    SLG = (H - X2B - X3B - HR + 2 * X2B + 3 * X3B + 4 * HR) / AB,
+    OBP = (H + BB + HBP) / (AB + BB + HBP + SF),
+    OPS = SLG + OBP
+  )
+batting_2000 <- batting_2000 |>
+  inner_join(People, by = "playerID") |>
+  mutate(
+    Birthyear = if_else(
+      birthMonth >= 7, birthYear + 1, birthYear
+    ),
+    Age = yearID - Birthyear
+  )
+
+batting_2000 |> drop_na(Age) -> batting_2000
+
+
+not_current_playerID <- People |>
+  filter(finalGame < "2021-11-01") |> 
+  pull(playerID)
+
+batting_2000 <- batting_2000 |>
+  filter(playerID %in% not_current_playerID)
+
+```
+
+
+```{r}
+midcareers <- batting_2000 |>
+  group_by(playerID) |>
+  summarize(
+    Midyear = (min(yearID) + max(yearID)) / 2,
+    AB_total = first(AB_career)
+  )
+batting_2000 <- batting_2000 |>
+  inner_join(midcareers, by = "playerID")
+
+```
+
+
+
+### Fielding pos
+
+```{r}
+batting_2000a <- batting_2000 |>
+  filter(Midyear >= 1985, Midyear <= 1995) |> ungroup()
+
+batting_2000a <- batting_2000a |>
+    mutate(age_c = Age -30)
+```
+
+
+
+```{r}
+fit_player <- brm(
+  OPS ~ age_c + I(age_c^2) + (age_c + I(age_c^2) | playerID),
+  data = batting_2000a,
+  cores = 4, iter = 2000,
+  control = list(adapt_delta = 0.95)
+)
+```
+
+```{r}
+summary(fit_player)
+
+# Posterior predictive check
+pp_check(fit_player)
+```
+
+## TESTING
+
+
+Simple test of hierarchical peak model
 
 
 Fake data:
@@ -121,11 +255,11 @@ CONSIDER: look at coefficients of sample and see if we can just use random slope
 (Check standard deviation of quadratic term)
 
 
-or supoer deluxe
+or maybe? random slope for position?
 ```{r}
 fit_player <- brm(
   ops ~ age_c + I(age_c^2) + 
-    (age_c + I(age_c^2) | position) + 
+    (age_c  | position) + 
     (age_c + I(age_c^2) | player),
   data = fake_data,
   cores = 4, iter = 3000,
