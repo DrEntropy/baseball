@@ -7,6 +7,7 @@ output: html_document
 ```{r}
 library(tidyverse)
 library(Lahman)
+library(brms)
 
 batting <- Batting |>
   replace_na(list(SF = 0, HBP = 0))
@@ -110,10 +111,11 @@ batting_2000 <- batting_2000 |>
 
 ```{r}
 batting_2000a <- batting_2000 |>
-  filter(Midyear >= 1985, Midyear <= 1995) |> ungroup()
+  filter(Midyear >= 1985, Midyear <= 1995) |> ungroup() 
 
 batting_2000a <- batting_2000a |>
-    mutate(age_c = Age -30)
+    mutate(age_c = (Age - 30)/20)|> 
+     select(OPS, playerID, Age, age_c, POS) |> drop_na()
 ```
 
 
@@ -123,16 +125,194 @@ fit_player <- brm(
   OPS ~ age_c + I(age_c^2) + (age_c + I(age_c^2) | playerID),
   data = batting_2000a,
   cores = 4, iter = 2000,
+  family = 'student',
   control = list(adapt_delta = 0.95)
 )
 ```
 
 ```{r}
-summary(fit_player)
 
 # Posterior predictive check
 pp_check(fit_player)
 ```
+
+```{r}
+posterior_player <- as_draws_df(fit_player)
+# Compute peak ages per player
+
+player_peak_ages <- posterior_player |>
+  select(starts_with("r_playerID"), b_age_c, b_Iage_cE2) |>
+  pivot_longer(cols = starts_with("r_playerID"),
+               names_to = c("playerID", "param"),
+               names_pattern = "r_playerID\\[(.*?),(.*?)\\]") |>
+  pivot_wider(names_from = param, values_from = value) |>
+  mutate(
+    linear_total = b_age_c + age_c,
+    quad_total = b_Iage_cE2 + Iage_cE2,
+    peak_age = 30 - 10*(linear_total / (2 * quad_total))
+  ) %>%
+  group_by(playerID) %>%
+  summarize(
+    peak_age_median = median(peak_age),
+    peak_age_lower = quantile(peak_age, 0.25),
+    peak_age_upper = quantile(peak_age, 0.75)
+  )  
+
+player_peak_ages <- player_peak_ages %>%
+  left_join(batting_2000a %>% select(playerID, POS) %>% distinct(), by = "playerID")
+```
+
+```{r}
+
+
+# Plot strip plot grouped by position
+ggplot(player_peak_ages, aes(x = POS, y = peak_age_median)) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  #geom_errorbar(
+  #  aes(ymin = peak_age_lower, ymax = peak_age_upper),
+  #  width = 0.1, alpha = 0.4, color = "gray40"
+  #) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA) +
+  labs(title = "Player Peak Ages Grouped by Position", 
+       x = "Position", y = "Peak Age") +
+  #scale_y_continuous(limits = c(20,50)) +
+  theme_minimal()
+```
+
+With error bars 
+
+```{r}
+# jitter by hand
+player_peak_ages <- player_peak_ages %>%
+  mutate(POS_jitter = as.numeric(factor(POS)) + runif(n(), -0.15, 0.15))
+
+ggplot(player_peak_ages, aes(x = POS_jitter, y = peak_age_median)) +
+  geom_point(alpha = 0.6, color = "blue", size = 1.5) +
+  geom_errorbar(
+    aes(ymin = peak_age_lower, ymax = peak_age_upper),
+    width = 0.0, alpha = 0.4, color = "gray40"
+  ) +
+  scale_x_continuous(
+    breaks = 1:length(unique(player_peak_ages$POS)),
+    labels = sort(unique(player_peak_ages$POS))
+  ) +
+ 
+  labs(title = "Player Peak Ages Grouped by Position (with uncertainty)", 
+       x = "Position", y = "Peak Age") +
+  theme_minimal()
+```
+
+```{r}
+# Select 4 random players
+set.seed(123)
+selected_players <- sample(unique(batting_2000a$playerID), 4)
+
+ 
+age_seq <- seq(min(batting_2000a$Age), max(batting_2000a$Age), length.out = 50)
+plot_data <- expand.grid(playerID = selected_players, Age = age_seq) %>%
+  mutate(age_c = (Age - 30)/20)
+
+# Get linear predictor predictions (30 draws)
+linpred_matrix <- posterior_linpred(fit_player, newdata = plot_data, ndraws = 30)
+
+ 
+pred_df <- plot_data %>%
+  mutate(row = row_number()) %>%
+  left_join(
+    as.data.frame(t(linpred_matrix)) %>%
+      mutate(row = row_number()) %>%
+      pivot_longer(-row, names_to = "draw", values_to = "OPS_pred"),
+    by = "row"
+  )
+
+ 
+actual_df <- batting_2000a %>%
+  filter(playerID %in% selected_players)
+
+ 
+ggplot() +
+  geom_point(data = actual_df, aes(x = Age, y = OPS), color = "black") +
+  geom_line(data = pred_df, aes(x = Age, y = OPS_pred, group = draw), 
+            color = "blue", alpha = 0.3) +
+  facet_wrap(~playerID, scales = "free") +
+  labs(title = "Smooth Fitted OPS curves (30 posterior draws) vs. Actual Data",
+       x = "Age",
+       y = "OPS") +
+  theme_minimal()
+
+```
+
+## Nonlinear 
+
+```{r}
+nlform <- bf(
+  OPS ~ peakOPS - gamma * ((Age - peakAge)/10)^2,
+  peakOPS + peakAge + gamma ~ 1 + (1 | playerID),
+  nl = TRUE
+)
+
+# Set informative priors
+priors <- c(
+  prior(normal(0.75, 0.1), nlpar = "peakOPS", lb = 0.5, ub = 2),
+  prior(normal(30, 5), nlpar = "peakAge", lb = 10, ub = 60),
+  prior(exponential(1), nlpar = "gamma", lb = 0)
+)
+
+fit_peak <- brm(
+  nlform,
+  data = batting_2000a,
+  prior = priors,
+  cores = 4,
+  iter = 4000,
+  family = student(),
+  control = list(adapt_delta = 0.95)
+)
+```
+
+```{r}
+pp_check(fit_peak)
+```
+
+
+Plot 
+
+```{r}
+# Select 4 random players (use same players as earlier for consistency)
+set.seed(123)
+selected_players <- sample(unique(batting_2000a$playerID), 4)
+ 
+age_seq <- seq(min(batting_2000a$Age), max(batting_2000a$Age), length.out = 50)
+plot_data <- expand.grid(playerID = selected_players, Age = age_seq)
+
+epreds <- posterior_epred(fit_peak, newdata = plot_data, ndraws = 30)
+
+pred_df <- plot_data %>%
+  mutate(row = row_number()) %>%
+  left_join(
+    as.data.frame(t(epreds)) %>%
+      mutate(row = row_number()) %>%
+      pivot_longer(-row, names_to = "draw", values_to = "OPS_pred"),
+    by = "row"
+  )
+
+ 
+actual_df <- batting_2000a %>%
+  filter(playerID %in% selected_players)
+ 
+ggplot() +
+  geom_point(data = actual_df, aes(x = Age, y = OPS), color = "black") +
+  geom_line(data = pred_df, aes(x = Age, y = OPS_pred, group = draw),
+            color = "blue", alpha = 0.3) +
+  facet_wrap(~playerID, scales = "free") +
+  labs(title = "Posterior OPS predictions vs. Actual Data",
+       subtitle = "30 posterior draws using stable peak-age parameterization",
+       x = "Age",
+       y = "OPS") +
+  theme_minimal()
+
+```
+
+
 
 ## TESTING
 
@@ -246,8 +426,6 @@ ggplot(player_peak_ages, aes(x = position, y = peak_age_mean)) +
   labs(title = "Player Peak Ages Grouped by Position", 
        x = "Position", y = "Peak Age") +
   theme_minimal()
-
-
 ``` 
 
 
