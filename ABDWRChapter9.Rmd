@@ -1,0 +1,318 @@
+---
+title: "ABDWRChapter9"
+output: html_document
+---
+
+## This chapter is about "Simulation"
+
+```{r}
+library(tidyverse)
+library(abdwr3edata)
+retro2016 <- read_rds(here::here("data/retro2016.rds"))
+```
+
+
+## Compute transition matrix
+
+Add states and generate transition matrix.
+
+```{r}
+retro2016 <- retro2016 |>
+  retrosheet_add_states()
+
+half_innings <- retro2016 |>
+  mutate(
+    runs = away_score_ct + home_score_ct,
+    half_inning_id = paste(game_id, inn_ct, bat_home_id)
+  ) |>
+  group_by(half_inning_id) |>
+  summarize(
+    outs_inning = sum(event_outs_ct), 
+    runs_inning = sum(runs_scored),
+    runs_start = first(runs),
+    max_runs = runs_inning + runs_start
+  )
+
+retro2016_complete <- retro2016 |> 
+  mutate(
+    half_inning_id = paste(game_id, inn_ct, bat_home_id)
+  ) |>
+  inner_join(half_innings, join_by(half_inning_id)) |>
+  filter(state != new_state | runs_scored > 0) |> 
+  filter(outs_inning == 3, bat_event_fl)
+
+retro2016_complete <- retro2016_complete |>
+  mutate(new_state = str_replace(new_state, "[0-1]{3} 3", "3"))
+
+T_matrix <- retro2016_complete |>
+  select(state, new_state) |>
+  table()
+
+
+P_matrix <- prop.table(T_matrix, 1)  |>
+  rbind("3" = c(rep(0, 24), 1))
+```
+
+Example
+
+
+```{r}
+P_matrix |>
+  as_tibble(rownames = "state") |>
+  filter(state == "000 0") |>
+  pivot_longer(
+    cols = -state, 
+    names_to = "new_state", 
+    values_to = "Prob" 
+  ) |>
+  filter(Prob > 0)
+```
+
+## Simulate markov chain
+
+```{r}
+num_havent_scored <- function(s) {
+  s |>
+    str_split("") |>
+    pluck(1) |>
+    as.numeric() |>
+    sum(na.rm = TRUE)
+}
+
+runners_out <- T_matrix |>
+  row.names() |>
+  set_names() |>
+  map_int(num_havent_scored)
+
+# Runs for each transition
+R_runs <- outer(
+  runners_out + 1, 
+  runners_out, 
+  FUN = "-"
+) |>
+  cbind("3" = rep(0, 24))
+
+simulate_half_inning <- function(P, R, start = 1) {
+  s <- start
+  path <- NULL
+  runs <- 0
+  while (s < 25) {
+    s_new <- sample(1:25, size = 1, prob = P[s, ])
+    path <- c(path, s_new)
+    runs <- runs + R[s, s_new]
+    s <- s_new
+  }
+  runs
+}
+
+```
+
+Example
+
+```{r}
+set.seed(111653)
+simulated_runs <- 1:10000 |>
+  map_int(~simulate_half_inning(T_matrix, R_runs))
+
+table(simulated_runs)
+```
+
+
+## Runs potential
+
+```{r}
+runs_j <- function(j) {
+  1:10000 |>
+    map_int(~simulate_half_inning(T_matrix, R_runs, j)) |>
+    mean()
+}
+
+erm_2016_mc <- tibble(
+  state = row.names(T_matrix), 
+  mean_run_value = map_dbl(1:24, runs_j)
+) |>
+  mutate(
+    bases = str_sub(state, 1, 3),
+    outs_ct = as.numeric(str_sub(state, 5, 5))
+  ) |>
+  select(-state)
+  
+erm_2016_mc |>
+  pivot_wider(names_from = outs_ct, values_from = mean_run_value)
+
+```
+
+This can be compared to previously computed erm2016.rds, they are different due to the plays we left out (e.g. steals)
+
+## Simulating a baseball season (Bradley Terry)
+
+Set up
+```{r}
+make_schedule <- function(teams, k) {
+  num_teams <- length(teams)
+  Home <- rep(rep(teams, each = num_teams), k)
+  Visitor <- rep(rep(teams, num_teams), k)
+  tibble(Home = Home, Visitor = Visitor) |>
+    filter(Home != Visitor)
+}
+
+library(Lahman)
+teams_68 <- Teams |>
+  filter(yearID == 1968) |>
+  select(teamID, lgID) |>
+  mutate(teamID = as.character(teamID)) |>
+  group_by(lgID)
+
+schedule <- teams_68 |>
+  group_split() |>
+  set_names(pull(group_keys(teams_68), "lgID")) |>
+  map(~make_schedule(teams = .x$teamID, k = 9)) |>
+  list_rbind(names_to = "lgID")
+
+# Simulated talent from normal distribution
+s_talent <- 0.20
+teams_68 <- teams_68 |>
+  mutate(talent = rnorm(10, 0, s_talent))
+
+schedule_talent <- schedule |>
+  inner_join(teams_68, join_by(lgID, Home == teamID)) |>
+  rename(talent_home = talent) |>
+  inner_join(teams_68, join_by(lgID, Visitor == teamID)) |>
+  rename(talent_visitor = talent)
+
+
+
+schedule_talent <- schedule_talent |> 
+  mutate(
+    prob_home = exp(talent_home) /
+      (exp(talent_home) + exp(talent_visitor))
+  )
+
+# THe actual simulation
+schedule_talent <- schedule_talent |>
+  mutate(
+    outcome = rbinom(nrow(schedule_talent), 1, prob_home),
+    winner = if_else(outcome == 1, Home, Visitor)
+)
+
+schedule_talent |>
+  select(Visitor, Home, prob_home, outcome, winner) |> 
+  slice_head(n = 6)
+```
+
+
+```{r}
+results <- schedule_talent |> 
+  group_by(winner) |>
+  summarize(Wins = n()) |>
+  inner_join(teams_68, by = c("winner" = "teamID"))
+results
+```
+
+## Simulating the post season
+
+```{r}
+win_league <- function(res) {
+  res |>
+    group_by(lgID) |>
+    mutate(
+      tiebreaker = runif(n = length(talent)),
+      wins_total = Wins + tiebreaker,
+      rank = min_rank(desc(wins_total)),
+      is_winner_lg = wins_total == max(wins_total)
+    )
+}
+
+sim_one <- win_league(results)
+
+ws_winner <- sim_one |>
+  filter(is_winner_lg) |>
+  ungroup() |>
+  mutate(
+    outcome = as.numeric(rmultinom(1, 7, exp(talent))),
+    is_winner_ws = outcome > 3
+  ) |>
+  filter(is_winner_ws) |>
+  select(winner, is_winner_ws)
+
+sim_one |>
+  left_join(ws_winner, by = c("winner")) |>
+  replace_na(list(is_winner_ws = 0))
+```
+
+
+### Use the library
+
+```{r}
+library(abdwr3edata)
+set.seed(111653)
+results_1 <- one_simulation_68(0.20). # 0.20 is the standard deviation of talen
+results_1
+```
+
+### Display standings function
+
+```{r}
+display_standings <- function(data, league) {
+  data |> 
+    filter(League == league) |>
+    select(Team, Wins) |>
+    mutate(Losses = 162 - Wins) |>
+    arrange(desc(Wins))
+}
+```
+
+### Simulating many seasons
+
+```{r}
+set.seed(111653)
+many_results <- rep(0.20, 1000) |>
+  map(one_simulation_68) |>
+  list_rbind()
+```
+
+
+### Plot it
+
+```{r}
+ggplot(many_results, aes(Talent, Wins)) +
+  geom_point(alpha = 0.05)
+```
+
+
+### Logistic fit 
+
+```{r}
+fit1 <- glm(
+  Winner.Lg ~ Talent,
+  data = many_results, family = binomial
+)
+fit2 <- glm(
+  Winner.WS ~ Talent,
+  data = many_results, family = binomial
+)
+```
+
+Use `predict` to interpet results.
+
+```{r}
+tdf <- tibble(
+  Talent =  seq(-0.4, 0.4, length.out = 100)
+)
+tdf |>
+  mutate(
+    Pennant = predict(fit1, newdata = tdf, type = "response"),
+    `World Series` = predict(fit2, newdata = tdf, type = "response")
+  ) |>
+  pivot_longer(
+    cols = -Talent,
+    names_to = "Outcome", 
+    values_to = "Probability"
+  ) |>
+  ggplot(aes(Talent, Probability, color = Outcome)) +
+  geom_line() + ylim(0, 1)  
+```
+
+
+
+
